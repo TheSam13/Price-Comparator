@@ -87,6 +87,11 @@ async function validateAllWithAI(query, amazonCards, flipkartCards, blinkitCards
     }
 }
 
+// Simple health check route
+app.get('/health', (req, res) => {
+  res.status(200).send('Server is alive and kicking!');
+});
+
 app.post('/api/compare', async (req, res) => {
     const { searchQuery, pincode } = req.body;
     if (!searchQuery) return res.status(400).json({ error: 'Please provide a search query.' });

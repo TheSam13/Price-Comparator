@@ -5,7 +5,8 @@ const { chromium } = require('playwright');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
-const PORT = 5000;
+// ✅ UPDATED: Dynamic port for Render Docker environment
+const PORT = process.env.PORT || 10000; 
 
 app.use(cors());
 app.use(express.json());
@@ -16,7 +17,8 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function validateAllWithAI(query, amazonCards, flipkartCards, blinkitCards) {
     console.log(`[🧠 AI Check] Validating all platforms in a single API call...`);
     
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // ✅ UPDATED: Changed to a valid stable model version
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); 
     
     const prompt = `
     I searched an e-commerce site for: "${query}".
@@ -87,7 +89,7 @@ async function validateAllWithAI(query, amazonCards, flipkartCards, blinkitCards
     }
 }
 
-// Simple health check route
+// ✅ HEALTH CHECK: Essential for verifying Render deployment status
 app.get('/health', (req, res) => {
   res.status(200).send('Server is alive and kicking!');
 });
@@ -106,9 +108,8 @@ app.post('/api/compare', async (req, res) => {
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // 🧠 The REAL hero for free-tier servers
+                '--disable-dev-shm-usage', // 🧠 Crucial for Render Free Tier
                 '--disable-blink-features=AutomationControlled'
-                // ❌ REMOVED: '--single-process' (Too unstable for heavy React sites)
             ]
         }); 
         
@@ -117,13 +118,11 @@ app.post('/api/compare', async (req, res) => {
             viewport: { width: 1280, height: 720 }
         });
 
-        // --------------------------------------------------------
         // 🛒 AMAZON SCRAPER 
-        // --------------------------------------------------------
         const scrapeAmazon = async () => {
             const page = await context.newPage();
             try {
-                await page.goto(`https://www.amazon.in/s?k=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+                await page.goto(`https://www.amazon.in/s?k=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
                 await page.waitForTimeout(2000);
                 await page.evaluate(() => window.scrollBy(0, 1500));
                 await page.waitForTimeout(1000);
@@ -131,125 +130,75 @@ app.post('/api/compare', async (req, res) => {
                 return await page.evaluate((query) => {
                     const items = document.querySelectorAll('[data-component-type="s-search-result"]');
                     if (items.length === 0) return null;
-
                     const queryWords = query.toLowerCase().trim().split(/\s+/);
                     const firstWord = queryWords[0]; 
                     const modelWords = queryWords.filter(w => /\d/.test(w)); 
                     let validProducts = [];
-
                     for (let item of items) {
                         if (item.querySelector('.puis-sponsored-label-text, .s-sponsored-label-info, [data-component-type="sp-sponsored-result"]')) continue;
-
                         const titleBlock = item.querySelector('[data-cy="title-recipe"]') || item.querySelector('h2');
                         if (!titleBlock) continue;
-
                         const titleText = titleBlock.innerText.replace(/\n/g, ' ').trim();
                         const cleanTitle = titleText.toLowerCase();
-                        
                         if (!cleanTitle.includes(firstWord)) continue;
-                        
                         if (modelWords.length > 0) {
                             let hasModel = false;
-                            for (let mw of modelWords) {
-                                if (cleanTitle.includes(mw)) { hasModel = true; break; }
-                            }
+                            for (let mw of modelWords) { if (cleanTitle.includes(mw)) { hasModel = true; break; } }
                             if (!hasModel) continue; 
                         }
-
                         if (item.textContent.toLowerCase().includes('currently unavailable')) continue;
-
                         let priceValue = null;
                         const priceNode = item.querySelector('.a-price-whole') || item.querySelector('.a-price .a-offscreen');
-                        if (priceNode) {
-                            priceValue = parseInt(priceNode.textContent.replace(/[^0-9]/g, ''), 10);
-                        } else {
-                            const priceLines = item.textContent.split('\n').filter(l => /(?:₹|rs\.?|inr)/i.test(l));
-                            for (let line of priceLines) {
-                                const pm = line.split('%')[0].match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
-                                if (pm) { priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10); break; }
-                            }
-                        }
-
+                        if (priceNode) { priceValue = parseInt(priceNode.textContent.replace(/[^0-9]/g, ''), 10); }
                         if (!priceValue || isNaN(priceValue)) continue;
                         const linkNode = titleBlock.querySelector('a') || item.querySelector('a');
-                        
                         validProducts.push({
                             price: priceValue,
                             title: titleText,
                             link: linkNode ? (linkNode.getAttribute('href').startsWith('http') ? linkNode.getAttribute('href') : 'https://www.amazon.in' + linkNode.getAttribute('href')) : ''
                         });
                     }
-                    
-                    if (validProducts.length > 0) return validProducts.slice(0, 5); 
-                    return null;
+                    return validProducts.length > 0 ? validProducts.slice(0, 5) : null;
                 }, searchQuery);
-            } catch (e) {
-                console.error(`[⚠️ Amazon Scraper Error] ${e.message}`);
-                return null;
-            } finally {
-                await page.close(); // 🧹 FREE UP RAM!
-            }
+            } catch (e) { console.error(`[⚠️ Amazon Scraper Error] ${e.message}`); return null; }
+            finally { await page.close(); }
         };
 
-        // --------------------------------------------------------
         // 🛍️ FLIPKART SCRAPER
-        // --------------------------------------------------------
         const scrapeFlipkart = async () => {
             const page = await context.newPage();
             try {
-                await page.goto(`https://www.flipkart.com/search?q=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+                await page.goto(`https://www.flipkart.com/search?q=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
                 await page.waitForTimeout(2000);
-
                return await page.evaluate((query) => {
                     const queryWords = query.toLowerCase().trim().split(/\s+/);
                     const firstWord = queryWords[0]; 
                     const modelWords = queryWords.filter(w => /\d/.test(w)); 
                     const rejectRegex = /\b(case|cover|protector|glass|tempered|skin|refurbished|renewed|cable|charger|adapter|strap|band|film|ring|guard)\b/i;
-                    
                     const items = document.querySelectorAll('div[data-id]');
                     let validProducts = [];
-
                     for (let item of items) {
-                        let isSponsored = false;
-                        if (item.innerText.toLowerCase().includes('ad\n') || item.innerText.toLowerCase().includes('sponsored')) {
-                            isSponsored = true;
-                        }
-                        if (isSponsored) continue;
-
+                        if (item.innerText.toLowerCase().includes('ad\n') || item.innerText.toLowerCase().includes('sponsored')) continue;
                         const rawText = item.innerText || "";
                         if (!rawText || rawText.toLowerCase().includes('out of stock')) continue;
                         const cleanTitle = rawText.toLowerCase();
-                        
                         if (!cleanTitle.includes(firstWord)) continue;
-                        
                         if (modelWords.length > 0) {
                             let hasModel = false;
-                            for (let mw of modelWords) {
-                                if (cleanTitle.includes(mw)) { hasModel = true; break; }
-                            }
+                            for (let mw of modelWords) { if (cleanTitle.includes(mw)) { hasModel = true; break; } }
                             if (!hasModel) continue; 
                         }
-
                         if (rejectRegex.test(cleanTitle)) continue;
-
                         let priceValue = null;
                         const priceLines = rawText.split('\n').filter(l => /(?:₹|rs\.?|inr)/i.test(l));
                         for (let line of priceLines) {
                             const pm = line.split('%')[0].match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
                             if (pm) { priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10); break; }
                         }
-
                         if (priceValue) {
                             const img = item.querySelector('img'); 
-                            
-                            let finalLink = window.location.href; 
                             const anchor = item.tagName.toLowerCase() === 'a' ? item : (item.querySelector('a') || item.closest('a')); 
-                            
-                            if (anchor && anchor.getAttribute('href')) {
-                                let extractedHref = anchor.getAttribute('href');
-                                finalLink = extractedHref.startsWith('http') ? extractedHref : 'https://www.flipkart.com' + extractedHref;
-                            }
-
+                            let finalLink = anchor && anchor.getAttribute('href') ? (anchor.getAttribute('href').startsWith('http') ? anchor.getAttribute('href') : 'https://www.flipkart.com' + anchor.getAttribute('href')) : window.location.href;
                             validProducts.push({
                                 price: priceValue,
                                 title: img && img.getAttribute('alt') ? img.getAttribute('alt') : cleanTitle.split('\n')[0].trim(),
@@ -257,174 +206,97 @@ app.post('/api/compare', async (req, res) => {
                             });
                         }
                     }
-
-                    if (validProducts.length > 0) return validProducts.slice(0, 8); 
-                    return null;
+                    return validProducts.length > 0 ? validProducts.slice(0, 8) : null;
                 }, searchQuery);
-            } catch (e) {
-                console.error(`[⚠️ Flipkart Scraper Error] ${e.message}`);
-                return null;
-            } finally {
-                await page.close(); // 🧹 FREE UP RAM!
-            }
+            } catch (e) { console.error(`[⚠️ Flipkart Scraper Error] ${e.message}`); return null; }
+            finally { await page.close(); }
         };
 
-        // --------------------------------------------------------
         // 🥦 BLINKIT SCRAPER
-        // --------------------------------------------------------
         const scrapeBlinkit = async () => {
             const page = await context.newPage();
-            
-            page.on('console', msg => {
-                if(msg.text().includes('[DEBUG]')) {
-                    console.log(`🥦 Blinkit Log: ${msg.text()}`);
-                }
-            });
-
             try {
                 const testPincode = pincode || "110001"; 
                 await page.goto('https://blinkit.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                
                 const inputSelector = 'input[placeholder*="location" i], input[placeholder*="city" i], .SearchBarContainer input';
-                try { await page.waitForSelector(inputSelector, { state: 'visible', timeout: 8000 }); } 
-                catch (e) { await page.click('header [class*="location"], header button').catch(()=> {}); await page.waitForSelector(inputSelector, { state: 'visible', timeout: 5000 }); }
-
+                await page.waitForSelector(inputSelector, { state: 'visible', timeout: 8000 }).catch(async () => {
+                    await page.click('header [class*="location"], header button').catch(()=> {});
+                    await page.waitForSelector(inputSelector, { state: 'visible', timeout: 5000 });
+                });
                 await page.fill(inputSelector, ''); 
                 await page.type(inputSelector, testPincode, { delay: 100 }); 
                 await page.waitForTimeout(2000); 
-                
                 try {
                     const firstSuggestion = page.locator('div[class*="LocationSearchList"] > div, .LocationSearchListContainer > div').first();
                     await firstSuggestion.waitFor({ state: 'visible', timeout: 5000 });
                     await firstSuggestion.click();
-                } catch (e) {
-                    await page.keyboard.press('ArrowDown'); await page.waitForTimeout(500); await page.keyboard.press('Enter');
-                }
-
-                await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+                } catch (e) { await page.keyboard.press('ArrowDown'); await page.waitForTimeout(500); await page.keyboard.press('Enter'); }
                 await page.waitForTimeout(2500); 
                 await page.goto(`https://blinkit.com/s/?q=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded' });
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-                
-                await page.waitForSelector('img', { state: 'visible', timeout: 4000 }).catch(() => {});
-                await page.waitForTimeout(1500); 
+                await page.waitForTimeout(2000); 
 
                 return await page.evaluate((query) => {
-                    console.log(`[DEBUG] Starting DOM evaluation for query: "${query}"`);
-                    
                     const queryWords = query.toLowerCase().trim().split(/\s+/);
                     const firstWord = queryWords[0]; 
                     const modelWords = queryWords.filter(w => /\d/.test(w)); 
-
-                    const addNodes = Array.from(document.querySelectorAll('div, button, a')).filter(el => {
-                        return el.textContent && el.textContent.trim().toUpperCase() === 'ADD';
-                    });
-                    
-                    console.log(`[DEBUG] Found ${addNodes.length} 'ADD' buttons on the page.`);
-
+                    const addNodes = Array.from(document.querySelectorAll('div, button, a')).filter(el => el.textContent && el.textContent.trim().toUpperCase() === 'ADD');
                     let validProducts = [];
-
-                    for (let [index, node] of addNodes.entries()) {
+                    for (let node of addNodes) {
                         let card = node.parentElement;
                         let found = false;
-                        
                         for (let i = 0; i < 10; i++) {
-                            const hasPrice = card && card.innerText && card.innerText.includes('₹');
-                            const hasLinkOrImage = card && (card.querySelector('a') || card.tagName.toLowerCase() === 'a' || card.querySelector('img'));
-                            
-                            if (hasPrice && hasLinkOrImage) {
-                                found = true;
-                                break;
-                            }
+                            if (card && card.innerText && card.innerText.includes('₹') && (card.querySelector('img') || card.querySelector('a'))) { found = true; break; }
                             if (card) card = card.parentElement;
                         }
-
                         if (!found) continue;
-
                         const rawText = card.innerText || "";
                         const cleanTitle = rawText.toLowerCase();
-
-                        if (cleanTitle.includes('out of stock') || cleanTitle.includes('sponsored')) continue;
-
-                        if (!cleanTitle.includes(firstWord)) {
-                            console.log(`[DEBUG] Item ${index}: Rejected (Missing '${firstWord}') -> Text seen: ${cleanTitle.replace(/\n/g, ' ').substring(0, 50)}...`);
-                            continue;
-                        }
-
+                        if (cleanTitle.includes('out of stock') || cleanTitle.includes('sponsored') || !cleanTitle.includes(firstWord)) continue;
                         if (modelWords.length > 0) {
                             let hasModel = false;
-                            for (let mw of modelWords) {
-                                if (cleanTitle.includes(mw)) { hasModel = true; break; }
-                            }
+                            for (let mw of modelWords) { if (cleanTitle.includes(mw)) { hasModel = true; break; } }
                             if (!hasModel) continue; 
                         }
-
                         let priceValue = null;
-                        const priceLines = rawText.split('\n').filter(l => /(?:₹|rs\.?|inr)/i.test(l));
-                        for (let line of priceLines) {
-                            const pm = line.split('%')[0].match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
-                            if (pm) { priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10); break; }
-                        }
-
+                        const pm = rawText.match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
+                        if (pm) priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10);
                         if (!priceValue) continue;
-
                         const img = card.querySelector('img');
-                        let title = img && img.getAttribute('alt') ? img.getAttribute('alt') : cleanTitle.split('₹')[0].replace(/\n/g, ' ').trim();
-                        
-                        let finalLink = window.location.href; 
-                        const anchor = card.querySelector('a') || card.closest('a'); 
-                        if (anchor && anchor.getAttribute('href')) {
-                            let extractedHref = anchor.getAttribute('href');
-                            finalLink = extractedHref.startsWith('http') ? extractedHref : 'https://blinkit.com' + extractedHref;
-                        }
-
-                        console.log(`[DEBUG] Item ${index}: SUCCESS -> ${title} | ₹${priceValue}`);
-
+                        const anchor = card.querySelector('a') || card.closest('a');
                         validProducts.push({
                             price: priceValue,
-                            title: title,
-                            link: finalLink
+                            title: img && img.getAttribute('alt') ? img.getAttribute('alt') : cleanTitle.split('₹')[0].replace(/\n/g, ' ').trim(),
+                            link: anchor && anchor.getAttribute('href') ? (anchor.getAttribute('href').startsWith('http') ? anchor.getAttribute('href') : 'https://blinkit.com' + anchor.getAttribute('href')) : window.location.href
                         });
                     }
-
-                    const uniqueProducts = Array.from(new Map(validProducts.map(item => [item.title, item])).values());
-                    return uniqueProducts.length > 0 ? uniqueProducts.slice(0, 5) : null;
+                    return Array.from(new Map(validProducts.map(item => [item.title, item])).values()).slice(0, 5);
                 }, searchQuery);
-
-            } catch (e) {
-                console.error(`[⚠️ Blinkit Scraper Error] ${e.message}`);
-                return null;
-            } finally {
-                await page.close(); // 🧹 FREE UP RAM!
-            }
+            } catch (e) { console.error(`[⚠️ Blinkit Scraper Error] ${e.message}`); return null; }
+            finally { await page.close(); }
         };
 
-        // --- SEQUENTIAL EXECUTION & AI VALIDATION ---
-        console.log(`[⚡] Executing scrapers sequentially to save RAM...`);
-        
+        // --- SEQUENTIAL EXECUTION (Memory Safe) ---
         console.log(`[🛒] Scraping Amazon...`);
-        const rawAmazon = await scrapeAmazon() || null;
+        const rawAmazon = await scrapeAmazon();
         
         console.log(`[🛍️] Scraping Flipkart...`);
-        const rawFlipkart = await scrapeFlipkart() || null;
+        const rawFlipkart = await scrapeFlipkart();
         
         console.log(`[🥦] Scraping Blinkit...`);
-        const rawBlinkit = await scrapeBlinkit() || null;
+        const rawBlinkit = await scrapeBlinkit();
 
-        console.log(`[🤖] Passing all candidates to AI for consolidated validation...`);
+        console.log(`[🤖] Validating with AI...`);
         const { amazonData, flipkartData, blinkitData } = await validateAllWithAI(searchQuery, rawAmazon, rawFlipkart, rawBlinkit);
 
-        // --- COMPARATIVE LOGIC ---
         const aPrice = amazonData ? amazonData.price : Infinity;
         const fPrice = flipkartData ? flipkartData.price : Infinity;
         const bPrice = blinkitData ? blinkitData.price : Infinity;
         
         if (aPrice === Infinity && fPrice === Infinity && bPrice === Infinity) {
-            return res.status(404).json({ error: 'Data scramble detected or item out of stock/invalid across all platforms.' });
+            return res.status(404).json({ error: 'No valid matches found across platforms.' });
         }
 
         const minPrice = Math.min(aPrice, fPrice, bPrice);
-        
         let winner = 'Draw';
         if (minPrice === aPrice) winner = 'Amazon';
         else if (minPrice === fPrice) winner = 'Flipkart';
@@ -432,21 +304,24 @@ app.post('/api/compare', async (req, res) => {
 
         res.json({
             productName: searchQuery,
-            amazon: amazonData || { price: 0, link: '#', title: 'Not found or rejected by AI' },
-            flipkart: flipkartData || { price: 0, link: '#', title: 'Not found or rejected by AI' },
-            blinkit: blinkitData || { price: 0, link: '#', title: 'Not found or rejected by AI' }, 
+            amazon: amazonData || { price: 0, link: '#', title: 'Not found' },
+            flipkart: flipkartData || { price: 0, link: '#', title: 'Not found' },
+            blinkit: blinkitData || { price: 0, link: '#', title: 'Not found' }, 
             recommendation: winner
         });
 
     } catch (error) {
         console.error("[❌ Engine Crash]", error);
-        res.status(500).json({ error: 'Failed to gather comparative data.' });
+        res.status(500).json({ error: 'Internal engine failure.' });
     } finally {
         if (browser) {
-            console.log(`[🧹] Closing browser to free up instance memory...`);
-            await browser.close(); // 🧹 Nuke the instance entirely between searches
+            console.log(`[🧹] Closing browser...`);
+            await browser.close(); 
         }
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 IntelliPrice AI Core Engine running on http://localhost:${PORT}`));
+// ✅ UPDATED: Added host '0.0.0.0' for Docker connectivity
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 IntelliPrice AI Core Engine running on port ${PORT}`);
+});

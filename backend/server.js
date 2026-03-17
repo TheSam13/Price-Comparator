@@ -212,68 +212,110 @@ app.post('/api/compare', async (req, res) => {
             finally { await page.close(); }
         };
 
-        // 🥦 BLINKIT SCRAPER
-        const scrapeBlinkit = async () => {
-            const page = await context.newPage();
-            try {
-                const testPincode = pincode || "110001"; 
-                await page.goto('https://blinkit.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                const inputSelector = 'input[placeholder*="location" i], input[placeholder*="city" i], .SearchBarContainer input';
-                await page.waitForSelector(inputSelector, { state: 'visible', timeout: 8000 }).catch(async () => {
-                    await page.click('header [class*="location"], header button').catch(()=> {});
-                    await page.waitForSelector(inputSelector, { state: 'visible', timeout: 5000 });
-                });
-                await page.fill(inputSelector, ''); 
-                await page.type(inputSelector, testPincode, { delay: 100 }); 
-                await page.waitForTimeout(2000); 
-                try {
-                    const firstSuggestion = page.locator('div[class*="LocationSearchList"] > div, .LocationSearchListContainer > div').first();
-                    await firstSuggestion.waitFor({ state: 'visible', timeout: 5000 });
-                    await firstSuggestion.click();
-                } catch (e) { await page.keyboard.press('ArrowDown'); await page.waitForTimeout(500); await page.keyboard.press('Enter'); }
-                await page.waitForTimeout(2500); 
-                await page.goto(`https://blinkit.com/s/?q=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded' });
-                await page.waitForTimeout(2000); 
+const scrapeBlinkit = async () => {
+    const page = await context.newPage();
+    try {
+        const testPincode = pincode || "110001"; 
+        
+        // 1. Increased navigation timeout
+        await page.goto('https://blinkit.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+        
+        const inputSelector = 'input[placeholder*="location" i], input[placeholder*="city" i], .SearchBarContainer input';
+        
+        // 2. STABILITY TWEAK: Increased timeout to 15s to account for slow Render CPUs
+        await page.waitForSelector(inputSelector, { state: 'visible', timeout: 15000 }).catch(async () => {
+            console.log("📍 Location bar not found, trying manual click...");
+            await page.click('header [class*="location"], header button').catch(()=> {});
+            // Secondary wait with a bit more breathing room
+            await page.waitForSelector(inputSelector, { state: 'visible', timeout: 10000 });
+        });
 
-                return await page.evaluate((query) => {
-                    const queryWords = query.toLowerCase().trim().split(/\s+/);
-                    const firstWord = queryWords[0]; 
-                    const modelWords = queryWords.filter(w => /\d/.test(w)); 
-                    const addNodes = Array.from(document.querySelectorAll('div, button, a')).filter(el => el.textContent && el.textContent.trim().toUpperCase() === 'ADD');
-                    let validProducts = [];
-                    for (let node of addNodes) {
-                        let card = node.parentElement;
-                        let found = false;
-                        for (let i = 0; i < 10; i++) {
-                            if (card && card.innerText && card.innerText.includes('₹') && (card.querySelector('img') || card.querySelector('a'))) { found = true; break; }
-                            if (card) card = card.parentElement;
-                        }
-                        if (!found) continue;
-                        const rawText = card.innerText || "";
-                        const cleanTitle = rawText.toLowerCase();
-                        if (cleanTitle.includes('out of stock') || cleanTitle.includes('sponsored') || !cleanTitle.includes(firstWord)) continue;
-                        if (modelWords.length > 0) {
-                            let hasModel = false;
-                            for (let mw of modelWords) { if (cleanTitle.includes(mw)) { hasModel = true; break; } }
-                            if (!hasModel) continue; 
-                        }
-                        let priceValue = null;
-                        const pm = rawText.match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
-                        if (pm) priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10);
-                        if (!priceValue) continue;
-                        const img = card.querySelector('img');
-                        const anchor = card.querySelector('a') || card.closest('a');
-                        validProducts.push({
-                            price: priceValue,
-                            title: img && img.getAttribute('alt') ? img.getAttribute('alt') : cleanTitle.split('₹')[0].replace(/\n/g, ' ').trim(),
-                            link: anchor && anchor.getAttribute('href') ? (anchor.getAttribute('href').startsWith('http') ? anchor.getAttribute('href') : 'https://blinkit.com' + anchor.getAttribute('href')) : window.location.href
-                        });
+        // 3. Clear and type with a slightly slower delay to ensure characters register
+        await page.fill(inputSelector, ''); 
+        await page.type(inputSelector, testPincode, { delay: 150 }); 
+        await page.waitForTimeout(3000); // Wait for the suggestion list to populate
+        
+        try {
+            // Target the first suggestion more broadly
+            const firstSuggestion = page.locator('div[class*="LocationSearchList"] > div, .LocationSearchListContainer > div, [class*="location-item"]').first();
+            await firstSuggestion.waitFor({ state: 'visible', timeout: 7000 });
+            await firstSuggestion.click();
+        } catch (e) { 
+            console.log("⌨️ Suggestion click failed, using keyboard fallback...");
+            await page.keyboard.press('ArrowDown'); 
+            await page.waitForTimeout(500); 
+            await page.keyboard.press('Enter'); 
+        }
+
+        // Wait for the location cookie/state to save
+        await page.waitForTimeout(3000); 
+        
+        // 4. Final navigation to search results
+        await page.goto(`https://blinkit.com/s/?q=${encodeURIComponent(searchQuery)}`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(3000); // Allow product grid to render
+
+        return await page.evaluate((query) => {
+            const queryWords = query.toLowerCase().trim().split(/\s+/);
+            const firstWord = queryWords[0]; 
+            const modelWords = queryWords.filter(w => /\d/.test(w)); 
+            
+            // Blinkit often wraps "ADD" in different tags
+            const addNodes = Array.from(document.querySelectorAll('div, button, a, span'))
+                .filter(el => el.textContent && el.textContent.trim().toUpperCase() === 'ADD');
+            
+            let validProducts = [];
+            for (let node of addNodes) {
+                let card = node.parentElement;
+                let found = false;
+                
+                // Climb up to 12 levels to find the product card container
+                for (let i = 0; i < 12; i++) {
+                    if (card && card.innerText && card.innerText.includes('₹') && (card.querySelector('img') || card.querySelector('a'))) { 
+                        found = true; 
+                        break; 
                     }
-                    return Array.from(new Map(validProducts.map(item => [item.title, item])).values()).slice(0, 5);
-                }, searchQuery);
-            } catch (e) { console.error(`[⚠️ Blinkit Scraper Error] ${e.message}`); return null; }
-            finally { await page.close(); }
-        };
+                    if (card) card = card.parentElement;
+                }
+                
+                if (!found) continue;
+
+                const rawText = card.innerText || "";
+                const cleanTitle = rawText.toLowerCase();
+
+                if (cleanTitle.includes('out of stock') || cleanTitle.includes('sponsored') || !cleanTitle.includes(firstWord)) continue;
+
+                if (modelWords.length > 0) {
+                    let hasModel = false;
+                    for (let mw of modelWords) { if (cleanTitle.includes(mw)) { hasModel = true; break; } }
+                    if (!hasModel) continue; 
+                }
+
+                let priceValue = null;
+                const pm = rawText.match(/(?:₹|rs\.?|inr)\s*([0-9,]+)/i);
+                if (pm) priceValue = parseInt(pm[1].replace(/[^0-9]/g, ''), 10);
+                
+                if (!priceValue) continue;
+
+                const img = card.querySelector('img');
+                const anchor = card.querySelector('a') || card.closest('a');
+                
+                validProducts.push({
+                    price: priceValue,
+                    title: img && img.getAttribute('alt') ? img.getAttribute('alt') : cleanTitle.split('₹')[0].replace(/\n/g, ' ').trim(),
+                    link: anchor && anchor.getAttribute('href') ? (anchor.getAttribute('href').startsWith('http') ? anchor.getAttribute('href') : 'https://blinkit.com' + anchor.getAttribute('href')) : window.location.href
+                });
+            }
+            // Remove duplicates and return top 5
+            return Array.from(new Map(validProducts.map(item => [item.title, item])).values()).slice(0, 5);
+        }, searchQuery);
+
+    } catch (e) { 
+        console.error(`[⚠️ Blinkit Scraper Error] ${e.message}`); 
+        return null; 
+    } finally { 
+        await page.close(); 
+    }
+};
 
         // --- SEQUENTIAL EXECUTION (Memory Safe) ---
         console.log(`[🛒] Scraping Amazon...`);

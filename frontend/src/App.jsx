@@ -41,7 +41,7 @@ export default function App() {
     setData(null);
 
     try {
-      const response = await fetch('https://intelliprice-backend.onrender.com/', {
+      const response = await fetch('https://intelliprice-backend.onrender.com/api/compare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

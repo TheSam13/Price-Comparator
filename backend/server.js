@@ -227,7 +227,7 @@ const scrapeBlinkit = async () => {
             console.log("📍 Location bar not found, trying manual click...");
             await page.click('header [class*="location"], header button').catch(()=> {});
             // Secondary wait with a bit more breathing room
-            await page.waitForSelector(inputSelector, { state: 'visible', timeout: 10000 });
+            await page.waitForSelector(inputSelector, { state: 'visible', timeout: 30000 });
         });
 
         // 3. Clear and type with a slightly slower delay to ensure characters register

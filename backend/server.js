@@ -224,8 +224,23 @@ const scrapeBlinkit = async () => {
         
         // 2. STABILITY TWEAK: Increased timeout to 15s to account for slow Render CPUs
         await page.waitForSelector(inputSelector, { state: 'visible', timeout: 15000 }).catch(async () => {
-            console.log("📍 Location bar not found, trying manual click...");
-            await page.click('header [class*="location"], header button').catch(()=> {});
+    console.log("📍 Location bar not found!");
+    
+    // X-RAY VISION: What is the server actually seeing?
+    const pageTitle = await page.title();
+    console.log(`[🔍 X-Ray] Page Title is: "${pageTitle}"`);
+    
+    if (pageTitle.toLowerCase().includes('cloudflare') || pageTitle.toLowerCase().includes('security') || pageTitle.toLowerCase().includes('bot')) {
+        console.log("🚨 BLOCKED: Blinkit's anti-bot system intercepted the request.");
+    } else {
+        console.log("🚨 DOM MISMATCH: We bypassed the bot check, but the HTML changed.");
+    }
+
+    // Try the fallback click anyway
+    await page.click('header [class*="location"], header button').catch(()=> {});
+    await page.waitForSelector(inputSelector, { state: 'visible', timeout: 10000 });
+});
+
             // Secondary wait with a bit more breathing room
             await page.waitForSelector(inputSelector, { state: 'visible', timeout: 30000 });
         });

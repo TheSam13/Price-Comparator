@@ -16,7 +16,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function validateAllWithAI(query, amazonCards, flipkartCards, blinkitCards) {
     console.log(`[🧠 AI Check] Validating all platforms in a single API call...`);
     
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); 
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); 
     
     const prompt = `
     I searched an e-commerce site for: "${query}".
